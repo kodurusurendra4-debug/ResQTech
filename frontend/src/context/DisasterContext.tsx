@@ -76,57 +76,107 @@ export const DisasterProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
   }, []);
 
-  // Real-time WebSocket connection to backend
+  // Helper for dynamic WebSocket URL resolution
+  const getWebSocketUrl = (): string => {
+    if (import.meta.env.VITE_WS_BASE_URL) {
+      return import.meta.env.VITE_WS_BASE_URL;
+    }
+    if (typeof window !== 'undefined') {
+      if (window.location.port === '5173') {
+        return 'ws://localhost:8000/ws/live';
+      }
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      return `${protocol}//${window.location.host}/ws/live`;
+    }
+    return 'ws://localhost:8000/ws/live';
+  };
+
+  // Real-time WebSocket connection to backend with auto-reconnect
   useEffect(() => {
     let ws: WebSocket | null = null;
-    try {
-      ws = new WebSocket('ws://localhost:8000/ws/live');
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.event === 'SIMULATION_STEP_CHANGED' || data.event === 'SIMULATION_RESET') {
-            setSimulationState(data.step);
-            // Reflect in locality risk
-            setLocalityRisk(prev => ({
-              ...prev,
-              risk_score: data.step.risk_score,
-              risk_level: data.step.risk_level,
-              population_affected_estimate: data.step.affected_population
-            }));
-          } else if (data.event === 'SHELTER_CHECKIN') {
-            setShelters(prev => prev.map(s => s.id === data.shelter_id ? { ...s, current_occupancy: data.new_occupancy } : s));
-          } else if (data.event === 'NEW_SOS_ALERT') {
-            const newAlert: SOSAlert = {
-              incident_id: data.incident_id,
-              user_id: 'USER-REMOTE',
-              user_name: 'Distressed Citizen',
-              user_phone: '+91-XXXXX',
-              latitude: data.latitude,
-              longitude: data.longitude,
-              locality: data.locality,
-              timestamp: data.timestamp,
-              emergency_type: 'Flash Flood Inundation',
-              severity: data.severity,
-              family_members_count: data.family_members_count,
-              has_elderly: true,
-              has_children: true,
-              has_disabled: false,
-              status: 'Active'
-            };
-            setActiveSOSAlerts(prev => [newAlert, ...prev]);
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let isUnmounted = false;
+
+    const connect = () => {
+      if (isUnmounted) return;
+      try {
+        const wsUrl = getWebSocketUrl();
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          console.log('[Suraksha Telemetry] WebSocket connected to', wsUrl);
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.event === 'SIMULATION_STEP_CHANGED' || data.event === 'SIMULATION_RESET') {
+              setSimulationState(data.step);
+              // Reflect in locality risk
+              setLocalityRisk(prev => ({
+                ...prev,
+                risk_score: data.step.risk_score,
+                risk_level: data.step.risk_level,
+                population_affected_estimate: data.step.affected_population
+              }));
+            } else if (data.event === 'SHELTER_CHECKIN') {
+              setShelters(prev => prev.map(s => s.id === data.shelter_id ? { ...s, current_occupancy: data.new_occupancy } : s));
+            } else if (data.event === 'NEW_SOS_ALERT') {
+              const newAlert: SOSAlert = {
+                incident_id: data.incident_id,
+                user_id: 'USER-REMOTE',
+                user_name: 'Distressed Citizen',
+                user_phone: '+91-XXXXX',
+                latitude: data.latitude,
+                longitude: data.longitude,
+                locality: data.locality,
+                timestamp: data.timestamp,
+                emergency_type: 'Flash Flood Inundation',
+                severity: data.severity,
+                family_members_count: data.family_members_count,
+                has_elderly: true,
+                has_children: true,
+                has_disabled: false,
+                status: 'Active'
+              };
+              setActiveSOSAlerts(prev => [newAlert, ...prev]);
+            }
+          } catch (e) {
+            console.error("WS Parse error:", e);
           }
-        } catch (e) {
-          console.error("WS Parse error:", e);
+        };
+
+        ws.onclose = () => {
+          if (!isUnmounted) {
+            // Reconnect after 5 seconds
+            reconnectTimer = setTimeout(connect, 5000);
+          }
+        };
+
+        ws.onerror = (err) => {
+          console.warn("WebSocket error (will attempt reconnection):", err);
+          ws?.close();
+        };
+      } catch (err) {
+        console.warn("WebSocket could not connect (operating in standalone demo mode):", err);
+        if (!isUnmounted) {
+          reconnectTimer = setTimeout(connect, 5000);
         }
-      };
-    } catch (err) {
-      console.warn("WebSocket could not connect (operating in standalone demo mode):", err);
-    }
+      }
+    };
+
+    connect();
 
     return () => {
-      if (ws) ws.close();
+      isUnmounted = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+      }
     };
   }, []);
+
 
   const triggerSOS = async (params: {
     notes?: string;

@@ -11,7 +11,23 @@ import {
   SimulationStep
 } from '../types';
 
-const API_BASE_URL = 'http://localhost:8000';
+// Dynamically resolve API Base URL:
+// 1. Explicit env var (VITE_API_BASE_URL)
+// 2. Local Vite dev server (port 5173) -> http://localhost:8000
+// 3. Production unified deployment (Render) -> empty string for relative paths
+export const getApiBaseUrl = (): string => {
+  if (import.meta.env.VITE_API_BASE_URL !== undefined && import.meta.env.VITE_API_BASE_URL !== '') {
+    return import.meta.env.VITE_API_BASE_URL;
+  }
+  if (typeof window !== 'undefined') {
+    if (window.location.port === '5173') {
+      return 'http://localhost:8000';
+    }
+  }
+  return '';
+};
+
+export const API_BASE_URL = getApiBaseUrl();
 
 export async function fetchWithFallback<T>(endpoint: string, fallbackData: T, options?: RequestInit): Promise<T> {
   try {
